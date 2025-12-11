@@ -271,13 +271,27 @@ func (i *Instance) Fork(newTitle, newGroupPath string) (string, error) {
 		return "", fmt.Errorf("cannot fork: no active Claude session")
 	}
 
+	// Get the actual working directory from tmux (not the stored project_path)
+	// Claude uses current directory to locate session files, so we must cd there first
+	workDir := i.GetActualWorkDir()
+
 	// Build the fork command with the correct Claude profile
 	// This ensures fork uses the same profile where the session ID was detected
 	// Uses --dangerously-skip-permissions to match typical cdw workflow
 	configDir := GetClaudeConfigDir()
-	cmd := fmt.Sprintf("CLAUDE_CONFIG_DIR=%s claude --dangerously-skip-permissions --resume %s --fork-session", configDir, i.ClaudeSessionID)
+	cmd := fmt.Sprintf("cd %s && CLAUDE_CONFIG_DIR=%s claude --dangerously-skip-permissions --resume %s --fork-session", workDir, configDir, i.ClaudeSessionID)
 
 	return cmd, nil
+}
+
+// GetActualWorkDir returns the actual working directory from tmux, or falls back to ProjectPath
+func (i *Instance) GetActualWorkDir() string {
+	if i.tmuxSession != nil {
+		if workDir := i.tmuxSession.GetWorkDir(); workDir != "" {
+			return workDir
+		}
+	}
+	return i.ProjectPath
 }
 
 // CreateForkedInstance creates a new Instance configured for forking
@@ -287,8 +301,9 @@ func (i *Instance) CreateForkedInstance(newTitle, newGroupPath string) (*Instanc
 		return nil, "", err
 	}
 
-	// Create new instance
-	forked := NewInstance(newTitle, i.ProjectPath)
+	// Create new instance with the ACTUAL working directory (not stored project_path)
+	// This ensures the forked session uses the correct path where Claude session lives
+	forked := NewInstance(newTitle, i.GetActualWorkDir())
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
 	} else {
