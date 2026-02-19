@@ -883,6 +883,24 @@ func TestCreateSymlinkWithExpansion_RelativePathError(t *testing.T) {
 	}
 }
 
+func TestGenerateHeartbeatPlist_IncludesAgentDeckDir(t *testing.T) {
+	plist, err := GenerateHeartbeatPlist("test-conductor", 15)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(plist, "__PATH__") {
+		t.Error("plist still contains __PATH__ placeholder")
+	}
+	agentDeck := findAgentDeck()
+	if agentDeck == "" {
+		t.Skip("agent-deck not found in PATH, skipping directory check")
+	}
+	agentDeckDir := filepath.Dir(agentDeck)
+	if !strings.Contains(plist, agentDeckDir) {
+		t.Errorf("heartbeat plist PATH should contain agent-deck dir %q, plist:\n%s", agentDeckDir, plist)
+	}
+}
+
 func TestGenerateLaunchdPlist_IncludesAgentDeckDir(t *testing.T) {
 	plist, err := GenerateLaunchdPlist()
 	if err != nil {
