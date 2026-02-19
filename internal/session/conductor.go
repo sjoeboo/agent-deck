@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -432,10 +433,8 @@ func buildDaemonPath(agentDeckPath string) string {
 	}
 	dir := filepath.Dir(agentDeckPath)
 	// Avoid duplicating a directory already in base
-	for _, segment := range strings.Split(base, ":") {
-		if segment == dir {
-			return base
-		}
+	if slices.Contains(strings.Split(base, ":"), dir) {
+		return base
 	}
 	return dir + ":" + base
 }
