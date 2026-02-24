@@ -940,3 +940,220 @@ func TestRestartSessionCmdSessionMissingReturnsError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", restarted.err)
 	}
 }
+
+func TestListItemAt(t *testing.T) {
+	makeItems := func(n int) []session.Item {
+		items := make([]session.Item, n)
+		for i := range items {
+			items[i] = session.Item{Type: session.ItemTypeSession}
+		}
+		return items
+	}
+
+	t.Run("basic click hits correct item", func(t *testing.T) {
+		h := NewHome()
+		h.width = 120
+		h.height = 30
+		h.flatItems = makeItems(5)
+		h.viewOffset = 0
+		// listStartRow = 4 (no banners, viewOffset=0)
+		// row 4 → item 0, row 5 → item 1, row 6 → item 2
+		if got := h.listItemAt(5, 4); got != 0 {
+			t.Errorf("row 4 → want 0, got %d", got)
+		}
+		if got := h.listItemAt(5, 6); got != 2 {
+			t.Errorf("row 6 → want 2, got %d", got)
+		}
+	})
+
+	t.Run("click above list returns -1", func(t *testing.T) {
+		h := NewHome()
+		h.width = 120
+		h.height = 30
+		h.flatItems = makeItems(5)
+		if got := h.listItemAt(5, 0); got != -1 {
+			t.Errorf("row 0 → want -1, got %d", got)
+		}
+		if got := h.listItemAt(5, 3); got != -1 {
+			t.Errorf("row 3 → want -1, got %d", got)
+		}
+	})
+
+	t.Run("click beyond items returns -1", func(t *testing.T) {
+		h := NewHome()
+		h.width = 120
+		h.height = 30
+		h.flatItems = makeItems(3)
+		// listStartRow=4, items at rows 4,5,6 → row 7 is out of bounds
+		if got := h.listItemAt(5, 7); got != -1 {
+			t.Errorf("row beyond items → want -1, got %d", got)
+		}
+	})
+
+	t.Run("dual layout: click in right panel returns -1", func(t *testing.T) {
+		h := NewHome()
+		h.width = 120 // dual layout (>=80)
+		h.height = 30
+		h.flatItems = makeItems(5)
+		leftWidth := int(float64(120) * 0.35) // = 42
+		// click at x=50 is in the right panel
+		if got := h.listItemAt(50, 4); got != -1 {
+			t.Errorf("right panel click → want -1, got %d", got)
+		}
+		// click at x=41 is in left panel
+		if got := h.listItemAt(leftWidth-1, 4); got != 0 {
+			t.Errorf("left panel click → want 0, got %d", got)
+		}
+	})
+
+	t.Run("viewOffset shifts item mapping", func(t *testing.T) {
+		h := NewHome()
+		h.width = 120
+		h.height = 30
+		h.flatItems = makeItems(10)
+		h.viewOffset = 3
+		// viewOffset>0 adds 1 row for "more above" indicator
+		// listStartRow = 4 + 1 = 5
+		// row 5 → item 3 (viewOffset + 0)
+		if got := h.listItemAt(5, 5); got != 3 {
+			t.Errorf("row 5 with viewOffset=3 → want 3, got %d", got)
+		}
+	})
+}
+
+func TestHandleMouseMsg(t *testing.T) {
+	makeSessionItems := func(n int) []session.Item {
+		items := make([]session.Item, n)
+		for i := range items {
+			inst := &session.Instance{}
+			items[i] = session.Item{Type: session.ItemTypeSession, Session: inst}
+		}
+		return items
+	}
+
+	t.Run("single left click moves cursor", func(t *testing.T) {
+		h := NewHome()
+		h.width = 120
+		h.height = 30
+		h.flatItems = makeSessionItems(5)
+		h.cursor = 0
+
+		// listStartRow=4 (no banners, viewOffset=0), Y=5 → item 1
+		msg := tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 5, Y: 5}
+		model, _ := h.Update(msg)
+		updated := model.(*Home)
+		if updated.cursor != 1 {
+			t.Errorf("expected cursor=1 after click row 5, got %d", updated.cursor)
+		}
+	})
+
+	t.Run("click above list does not move cursor", func(t *testing.T) {
+		h := NewHome()
+		h.width = 120
+		h.height = 30
+		h.flatItems = makeSessionItems(5)
+		h.cursor = 2
+
+		// Y=0 is above the list (listStartRow=4)
+		msg := tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 5, Y: 0}
+		model, _ := h.Update(msg)
+		updated := model.(*Home)
+		if updated.cursor != 2 {
+			t.Errorf("expected cursor unchanged at 2, got %d", updated.cursor)
+		}
+	})
+
+	t.Run("first click records tracking state", func(t *testing.T) {
+		h := NewHome()
+		h.width = 120
+		h.height = 30
+		h.flatItems = makeSessionItems(5)
+		h.cursor = 0
+
+		// Y=4 → listStartRow=4 → item 0
+		msg := tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 5, Y: 4}
+		model, _ := h.Update(msg)
+		h = model.(*Home)
+		if h.lastClickIndex != 0 {
+			t.Errorf("expected lastClickIndex=0 after first click, got %d", h.lastClickIndex)
+		}
+		if h.lastClickTime.IsZero() {
+			t.Error("expected lastClickTime to be set after first click")
+		}
+	})
+
+	t.Run("scroll wheel up moves cursor up", func(t *testing.T) {
+		h := NewHome()
+		h.width = 120
+		h.height = 30
+		h.flatItems = makeSessionItems(20)
+		h.viewOffset = 5
+		h.cursor = 5
+
+		msg := tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress, X: 5, Y: 10}
+		model, _ := h.Update(msg)
+		updated := model.(*Home)
+		if updated.cursor >= 5 {
+			t.Errorf("expected cursor to move up after wheel up, got %d", updated.cursor)
+		}
+	})
+
+	t.Run("scroll wheel down moves cursor down", func(t *testing.T) {
+		h := NewHome()
+		h.width = 120
+		h.height = 30
+		h.flatItems = makeSessionItems(20)
+		h.cursor = 0
+
+		msg := tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress, X: 5, Y: 10}
+		model, _ := h.Update(msg)
+		updated := model.(*Home)
+		if updated.cursor <= 0 {
+			t.Errorf("expected cursor to move down after wheel down, got %d", updated.cursor)
+		}
+	})
+
+	t.Run("click on group item toggles group", func(t *testing.T) {
+		h := NewHome()
+		h.width = 120
+		h.height = 30
+
+		// Build a GroupTree manually with one expanded group
+		gt := session.NewGroupTree([]*session.Instance{})
+		grp := &session.Group{Name: "test", Path: "test", Expanded: true, Sessions: []*session.Instance{}}
+		gt.Groups["test"] = grp
+		gt.GroupList = append(gt.GroupList, grp)
+		gt.Expanded["test"] = true
+
+		h.groupTree = gt
+		h.flatItems = []session.Item{
+			{Type: session.ItemTypeGroup, Group: grp, Path: "test"},
+		}
+		h.cursor = 0
+
+		// Y=4 → listStartRow=4 → item 0 (the group)
+		msg := tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 5, Y: 4}
+		model, _ := h.Update(msg)
+		updated := model.(*Home)
+
+		// After toggling, the group should be collapsed
+		// Check via the Expanded map (false or absent = collapsed)
+		if updated.groupTree.Expanded["test"] {
+			t.Error("expected group to be collapsed after click, but Expanded[\"test\"] is still true")
+		}
+	})
+}
+
+func TestAttachSessionMouseModeConfig(t *testing.T) {
+	// Verify GetMouseMode accessor works correctly.
+	// The integration (EnableMouseMode called on attach) requires a real tmux session.
+	s := session.TmuxSettings{}
+	if s.GetMouseMode() != false {
+		t.Error("default MouseMode should be false")
+	}
+	tr := true
+	s.MouseMode = &tr
+	if !s.GetMouseMode() {
+		t.Error("MouseMode should be true when set")
+	}
+}

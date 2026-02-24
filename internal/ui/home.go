@@ -276,6 +276,10 @@ type Home struct {
 	lastNavigationTime time.Time // When user last navigated (up/down/j/k)
 	isNavigating       bool      // True if user is rapidly navigating
 
+	// Mouse click tracking (double-click detection)
+	lastClickTime  time.Time
+	lastClickIndex int
+
 	// Cached status counts (invalidated on instance changes)
 	cachedStatusCounts struct {
 		running, waiting, idle, errored int
@@ -3178,6 +3182,9 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case tea.MouseMsg:
+		return h.handleMouseMsg(msg)
+
 	case tea.KeyMsg:
 		// Track user activity for adaptive status updates
 		h.lastUserInputTime = time.Now()
@@ -3551,6 +3558,90 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	h.newDialog, cmd = h.newDialog.Update(msg)
 	return h, cmd
+}
+
+// handleMouseMsg processes mouse events for the session list.
+// Single left-click moves the cursor; double-click attaches the session.
+// Group rows toggle on single click. Scroll wheel scrolls the list.
+func (h *Home) handleMouseMsg(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// Only handle press events (ignore release/motion)
+	if msg.Action != tea.MouseActionPress {
+		return h, nil
+	}
+
+	// Do not process mouse events when any modal dialog is open
+	if h.setupWizard.IsVisible() || h.settingsPanel.IsVisible() ||
+		h.helpOverlay.IsVisible() || h.search.IsVisible() ||
+		h.globalSearch.IsVisible() || h.newDialog.IsVisible() ||
+		h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
+		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() ||
+		h.skillDialog.IsVisible() || h.geminiModelDialog.IsVisible() ||
+		h.sessionPickerDialog.IsVisible() || h.worktreeFinishDialog.IsVisible() {
+		return h, nil
+	}
+
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		if h.cursor > 0 {
+			h.cursor--
+			h.syncViewport()
+		}
+		return h, nil
+
+	case tea.MouseButtonWheelDown:
+		if h.cursor < len(h.flatItems)-1 {
+			h.cursor++
+			h.syncViewport()
+		}
+		return h, nil
+
+	case tea.MouseButtonLeft:
+		idx := h.listItemAt(msg.X, msg.Y)
+		if idx < 0 || idx >= len(h.flatItems) {
+			return h, nil
+		}
+
+		item := h.flatItems[idx]
+
+		// Group row: single click toggles expand/collapse
+		if item.Type == session.ItemTypeGroup {
+			h.cursor = idx
+			h.groupTree.ToggleGroup(item.Path)
+			h.rebuildFlatItems()
+			// Reposition cursor to the (possibly moved) group row
+			for i, fi := range h.flatItems {
+				if fi.Type == session.ItemTypeGroup && fi.Path == item.Path {
+					h.cursor = i
+					break
+				}
+			}
+			h.saveGroupState()
+			return h, nil
+		}
+
+		// Session row: check for double-click
+		const doubleClickThreshold = 300 * time.Millisecond
+		isDoubleClick := idx == h.lastClickIndex &&
+			!h.lastClickTime.IsZero() &&
+			time.Since(h.lastClickTime) < doubleClickThreshold
+
+		// Always update tracking state
+		h.lastClickIndex = idx
+		h.lastClickTime = time.Now()
+
+		// Move cursor to clicked row
+		h.cursor = idx
+		h.syncViewport()
+
+		if isDoubleClick && item.Session != nil && item.Session.Exists() {
+			h.isAttaching.Store(true)
+			return h, h.attachSession(item.Session)
+		}
+
+		return h, nil
+	}
+
+	return h, nil
 }
 
 // handleMainKey handles keys in main view
@@ -5245,6 +5336,14 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// which were skipped during lazy loading for TUI startup performance
 	tmuxSess.EnsureConfigured()
 
+	// Enable tmux mouse mode if configured (allows clicking status bar to switch windows)
+	cfg, _ := session.LoadUserConfig()
+	if cfg != nil && cfg.Tmux.GetMouseMode() {
+		if err := tmuxSess.EnableMouseMode(); err != nil {
+			uiLog.Warn("enable_mouse_mode_failed", slog.Any("error", err))
+		}
+	}
+
 	// Sync session IDs to tmux environment for resume functionality
 	// (Deferred from load time for performance)
 	inst.SyncSessionIDsToTmux()
@@ -6186,7 +6285,9 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	var b strings.Builder
 
 	// Calculate panel widths (35% left, 65% right for more preview space)
-	leftWidth := int(float64(h.width) * 0.35)
+
+
+	leftWidth := h.getLeftPanelWidth()
 	rightWidth := h.width - leftWidth - 3 // -3 for separator
 
 	// Panel title is exactly 2 lines (title + underline)
@@ -6773,7 +6874,50 @@ func (h *Home) helpKey(key, desc string) string {
 	return keyStyle.Render(key) + " " + descStyle.Render(desc)
 }
 
+// getLeftPanelWidth returns the width of the left session-list panel in dual layout.
+func (h *Home) getLeftPanelWidth() int {
+	return int(float64(h.width) * 0.35)
+}
+
 // renderSessionList renders the left panel with hierarchical session list
+
+// listItemAt returns the flatItems index for the given screen coordinates (0-indexed),
+// or -1 if the coordinates don't correspond to a visible list item.
+func (h *Home) listItemAt(x, y int) int {
+	// In dual layout, clicks in the right panel are ignored.
+	if h.getLayoutMode() == LayoutModeDual {
+		leftWidth := h.getLeftPanelWidth()
+		if x >= leftWidth {
+			return -1
+		}
+	}
+
+	// Compute the screen row of the first list item.
+	updateBannerHeight := 0
+	if h.updateInfo != nil && h.updateInfo.Available {
+		updateBannerHeight = 1
+	}
+	maintenanceBannerHeight := 0
+	if h.maintenanceMsg != "" {
+		maintenanceBannerHeight = 1
+	}
+	// listStartRow: top bar (1) + filter bar (1) + optional banners + panel title+underline (2)
+
+	listStartRow := 1 + 1 + updateBannerHeight + maintenanceBannerHeight + 2
+	if h.viewOffset > 0 {
+		listStartRow++ // "more above" indicator occupies the first list row
+	}
+
+	if y < listStartRow {
+		return -1
+	}
+
+	idx := h.viewOffset + (y - listStartRow)
+	if idx < 0 || idx >= len(h.flatItems) {
+		return -1
+	}
+	return idx
+}
 func (h *Home) renderSessionList(width, height int) string {
 	var b strings.Builder
 

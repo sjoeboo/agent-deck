@@ -708,6 +708,7 @@ func (m *MCPDef) HasAutoStartServer() bool {
 //
 //	[tmux]
 //	inject_status_line = false
+//	mouse_mode = true
 //	options = { "allow-passthrough" = "all", "history-limit" = "50000" }
 type TmuxSettings struct {
 	// InjectStatusLine controls whether agent-deck injects a custom status line
@@ -719,6 +720,11 @@ type TmuxSettings struct {
 	// Options is a map of tmux option names to values.
 	// These are passed to `tmux set-option -t <session>` after defaults.
 	Options map[string]string `toml:"options"`
+
+	// MouseMode controls whether tmux mouse mode is enabled when attaching sessions.
+	// When true, clicking the tmux status bar switches windows and scroll works in panes.
+	// Default: false (opt-in). Enable with mouse_mode = true in [tmux] config section.
+	MouseMode *bool `toml:"mouse_mode"`
 }
 
 // GetInjectStatusLine returns whether to inject status line, defaulting to true
@@ -727,6 +733,15 @@ func (t TmuxSettings) GetInjectStatusLine() bool {
 		return true
 	}
 	return *t.InjectStatusLine
+}
+
+// GetMouseMode returns whether tmux mouse mode should be enabled on attach.
+// Defaults to false if not set.
+func (t TmuxSettings) GetMouseMode() bool {
+	if t.MouseMode == nil {
+		return false
+	}
+	return *t.MouseMode
 }
 
 type StatusSettings struct {
