@@ -22,8 +22,8 @@ type NotificationEntry struct {
 type NotificationManager struct {
 	entries      []*NotificationEntry // Ordered: newest first
 	maxShown     int
-	showAll      bool // Show all sessions vs only waiting
-	minimal      bool // Show compact icon+count summary only (no names, no key bindings)
+	showAll      bool           // Show all sessions vs only waiting
+	minimal      bool           // Show compact icon+count summary only (no names, no key bindings)
 	statusCounts map[Status]int // Per-status counts across all sessions (for minimal mode)
 	mu           sync.RWMutex
 }
@@ -209,8 +209,14 @@ func statusColor(status Status) string {
 // Called with nm.mu read lock already held.
 func (nm *NotificationManager) formatBarMinimal() string {
 	var parts []string
-	// Render in a consistent order: running, waiting, idle, error
-	for _, s := range []Status{StatusRunning, StatusWaiting, StatusIdle, StatusError} {
+	// Treat "starting" as active work in minimal mode so launching sessions are visible.
+	runningCount := nm.statusCounts[StatusRunning] + nm.statusCounts[StatusStarting]
+	if runningCount > 0 {
+		colored := fmt.Sprintf("#[fg=%s]%s %d#[default]", statusColor(StatusRunning), statusIcon(StatusRunning), runningCount)
+		parts = append(parts, colored)
+	}
+	// Render remaining statuses in a consistent order.
+	for _, s := range []Status{StatusWaiting, StatusIdle, StatusError} {
 		if n := nm.statusCounts[s]; n > 0 {
 			colored := fmt.Sprintf("#[fg=%s]%s %d#[default]", statusColor(s), statusIcon(s), n)
 			parts = append(parts, colored)

@@ -830,3 +830,23 @@ func TestMinimalMode_OnlySingleStatus(t *testing.T) {
 	assert.Contains(t, bar, "#e0af68") // waiting color
 	assert.NotContains(t, bar, "│")
 }
+
+// TestMinimalMode_StartingCountsAsRunning verifies starting sessions are included
+// in the active (running) bucket in minimal mode.
+func TestMinimalMode_StartingCountsAsRunning(t *testing.T) {
+	nm := NewNotificationManager(6, false, true)
+
+	now := time.Now()
+	instances := []*Instance{
+		{ID: "s1", Title: "starting-a", Status: StatusStarting, CreatedAt: now},
+		{ID: "s2", Title: "starting-b", Status: StatusStarting, CreatedAt: now.Add(-1 * time.Second)},
+		{ID: "r1", Title: "running-a", Status: StatusRunning, CreatedAt: now.Add(-2 * time.Second)},
+	}
+
+	nm.SyncFromInstances(instances, "")
+	bar := nm.FormatBar()
+
+	assert.Contains(t, bar, "● 3")
+	assert.Contains(t, bar, "#9ece6a") // running/active color
+	assert.NotEqual(t, "", bar)
+}
